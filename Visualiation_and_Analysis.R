@@ -5,6 +5,9 @@ library(ggrepel)
 library(reshape2)
 library(RColorBrewer)
 
+##########################
+#Data from the US DOT available at http://www.transtats.bts.gov/Fields.asp?Table_ID=236
+#The data I used is all months in the year 2015
 
 #Read in data -- one for each month
 df_readin = read.csv('data/832175209_T_ONTIME 1.csv')
@@ -67,21 +70,25 @@ levels(df$DAY_OF_WEEK) = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday
 df$DEP_DEL15 = factor(df$DEP_DEL15)
 df$ARR_DEL15 = factor(df$ARR_DEL15)
 
-#This is dataframe with all rows
+#This is dataframe with all rows. I will not use it, but might be useful.
 df_wna = df
 
 #####################################################################
 #####################################################################
 
 #Remove rows without delay information. Together this is ~1% of the data. However, this includes all flights
-# that were cancelled. The percent of flights with delay information that is missing, but not cancelled is
-# about .01%
+# that were cancelled (which I do not analyze).
+
 df = df[!is.na(df$ARR_DEL15),]
 
 nrow(df)
 #There are 5.7 million flights
 
+############################################################
+############################################################
 ######################## FLIGHTS OVERVIEW ##################
+############################################################
+############################################################
 
 ###########################################################
 ############## FLIGHTS BY MONTH ###########################
@@ -145,6 +152,8 @@ ggplot(by_dest_market[1:30,], aes(reorder(x = DEST_MARKET, -count), y = count/10
 by_route = group_by(df, ORIGIN_AIRPORT, DEST_AIRPORT) %>% summarise(count = n())
 by_route = by_route[order(-by_route$count),]
 
+#Route come in pairs (for flights in each direction), so I only use every other result to pick up the unique routes.
+
 ggplot(by_route[2*(1:10),], aes(reorder(
   x = paste(paste('Airport 1:', ORIGIN_AIRPORT), 
             paste('Airport 2:', DEST_AIRPORT, '\n'), sep = '\n'),
@@ -161,6 +170,8 @@ ggplot(by_route[2*(1:10),], aes(reorder(
 
 by_route_markets = group_by(df, ORIGIN_MARKET, DEST_MARKET) %>% summarise(count = n())
 by_route_markets = by_route_markets[order(-by_route_markets$count),]
+
+#Same for route above, these come in pairs.
 
 ggplot(by_route_markets[2*(1:10),], aes(reorder(
   x = paste(paste('Origin:', ORIGIN_MARKET), 
@@ -242,6 +253,7 @@ ggplot(delayed_by_airport[1:30,], aes(reorder(x = DEST_AIRPORT, -pct))) +
 ########### DELAYS AND MILES ###################
 ################################################
 
+#Bin flights by distance
 flights_distance = group_by(df, distance_group = cut(df$DISTANCE, breaks = c(0,500,1000,1500,2000,2500, 3000, 3500, 4000, 4500, 5000))) %>% 
   summarise(num = n())
 
@@ -287,7 +299,10 @@ reason_for_delay = summarise(df_delayed, Carrier = sum(CARRIER_DELAY > 0, na.rm 
            # mean(SECURITY_DELAY, na.rm = T)/n(),
            # mean(LATE_AIRCRAFT_DELAY, na.rm = T)/n()
            
+#This essentially makes a dataframe that is the transpose of the data frame above. This is for the purposes of ggplot.
 reason_for_delay = data.frame(pct = t(reason_for_delay))
+
+#Add column for reason corresponding to percent delay
 reason_for_delay$reason = rownames(reason_for_delay)
            
 ggplot(reason_for_delay, aes(x = reason)) + 
@@ -411,6 +426,7 @@ reason_for_delay_carriers = group_by(df_delayed, AIRLINE) %>%
                        Security = sum(SECURITY_DELAY > 0, na.rm = T)/n(),
                        Aircraft = sum(LATE_AIRCRAFT_DELAY > 0, na.rm = T)/n())
            
+#Put in long format for visualization purposes
 reason_for_delay_carriers_long = melt(id.vars = 'AIRLINE', reason_for_delay_carriers) 
            
 #ggplot(reason_for_delay_carriers_long, aes(x = AIRLINE, y = value)) + 
@@ -422,16 +438,13 @@ reason_for_delay_carriers_long = melt(id.vars = 'AIRLINE', reason_for_delay_carr
 #  geom_bar(stat = 'identity', aes(fill = variable), position = 'stack') +   
 #  theme(axis.text.x = element_text(angle = 90, hjust = 1), axis.ticks = element_blank())
            
-brewerpal(n=length(levels(delay_by_airport$AIRLINE)), palette=Accent)
-
+#Extend color palette to have enough colors for every airline
 getPalette = colorRampPalette(brewer.pal(8, "Set2"))
-
-getPalette(1)
 
 ggplot(reason_for_delay_carriers_long, aes(x = AIRLINE, y = value*100)) + 
  geom_bar(stat = 'identity', 
             aes(fill = AIRLINE), position = 'dodge') + 
- scale_fill_manual(values = getPalette(14), name = "Airline") +
+ scale_fill_manual(values = getPalette(length(levels(reason_for_delay_carriers_long$AIRLINE))), name = "Airline") +
  facet_wrap(~ variable) +
  theme(axis.text.x=element_blank(), axis.ticks = element_blank()) +
  xlab("Airline") + ylab("Percent of delayed flights") + 
@@ -451,10 +464,12 @@ ggplot(reason_for_delay_carriers_long, aes(x = AIRLINE, y = value*100)) +
 ######################################
 ###### LOGISTIC REGRESSION ###########
 #####################################
-pchisq(logit_no_market$deviance, logit_no_market$df.residual, lower.tail = FALSE)
+predictors = df[, c('MONTH', 'DAY_OF_WEEK', 'DEP_TIME_BLK', 'ARR_TIME_BLK', 'DISTANCE', 
+                    'AIRLINE', 'ORIGIN_AIRPORT', 'DEST_AIRPORT', 'ORIGIN_MARKET', 'DEST_MARKET')]
+response = df$ARR_DEL15
+predictors_response = cbind(predictors, response)
 
-anova(logit_no_market, logit_with_market, test = "Chisq")
-
+#First subset to top airports
 #Top airports
 by_dest_airport = group_by(predictors_response, DEST_AIRPORT) %>% summarise(count = n())
 by_dest_airport = by_dest_airport[order(-by_dest_airport$count),]
@@ -462,15 +477,20 @@ top_airports = by_dest_airport$DEST_AIRPORT[1:30]
 
 predictors_response_topdest = predictors_response[predictors_response$DEST_AIRPORT %in% top_airports & 
                                                     predictors_response$ORIGIN_AIRPORT %in% top_airports,]
+
+#Relevels so that the levels of the below factors decreases to the number we actually see (as opposed to having all of the levels from the
+# full data)
 predictors_response_topdest$ORIGIN_AIRPORT = factor(predictors_response_topdest$ORIGIN_AIRPORT)
 predictors_response_topdest$DEST_AIRPORT = factor(predictors_response_topdest$DEST_AIRPORT)
 predictors_response_topdest$ORIGIN_MARKET = factor(predictors_response_topdest$ORIGIN_MARKET)
 predictors_response_topdest$DEST_MARKET = factor(predictors_response_topdest$DEST_MARKET)
 
+#Randomly sample 200,000 observations and make an 80-20 training-test split.
 sample = sample(1:nrow(predictors_response_topdest), 200000)
 train = sample(sample, .8*length(sample))
 test = sample[!(sample %in% train)]
 
+#Bucketing time and month
 time_bucket <- function(x) 
 {
   if (x %in% c("0600-0659")) {
@@ -519,24 +539,26 @@ logit = glm(response ~ . - response - ORIGIN_MARKET - DEST_MARKET -
 
 
 mean(predictors_response_topdest$response[train] == 0)
-#80%
+#80% of observations are not delayed
 
 roc_logit = roc(predictors_response_topdest$response[train], logit$fitted.values)
 roc_logit$auc
 #AUC of .65
 
+#Examinging test error and performing an ROC analysis.
 roc_logit_coords = coords(roc_logit, x = 'best')
 threshold = roc_logit_coords['threshold']
 table(logit$fitted.values > threshold, predictors_response_topdest$response[train])
-#(74247 + 20169)/160000= 59%
+#Accuracy = (74247 + 20169)/160000= 59%
 #specificity sensitivity 
 #0.5774112   0.6420386 
 
-
+#Accuracy using .5 as threshold
 table(round(logit$fitted.values), predictors_response_topdest$response[train])
 #(128492 + 91)/160000
 #80%
 
+#Accuracy using optimal threshold from ROC analysis
 logit.test.predicted = predict(logit, predictors_response_topdest[test,], type = 'response')
 table(logit.test.predicted > threshold, predictors_response_topdest$response[test])
 #(18564 + 5017)/40000
@@ -544,9 +566,11 @@ table(logit.test.predicted > threshold, predictors_response_topdest$response[tes
 #Specificity = 18564/(18564 + 13506) = 58%
 #Sensitivity = 5017/(5017 + 2913) = 63%
 
+#Overall goodness of fit
+pchisq(logit$deviance, logit$df.residual, lower.tail = FALSE)
 
 #####################################
-##### RANDOM FOREST ################
+##### RANDOM FOREST ################         #Gave results on par with logistic regression
 #####################################
 library(randomForest)
 
